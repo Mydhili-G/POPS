@@ -1,0 +1,58 @@
+import os
+from pocketsphinx import get_model_path, PocketSphinx, AudioFile
+
+# Expected text
+expected = "hello world"
+
+# Audio file (16kHz WAV)
+audio_file = "speech.wav"
+
+# Configure decoder
+model_path = get_model_path()
+ps = PocketSphinx(
+    hmm=os.path.join(model_path, 'en-us'),
+    dict=os.path.join(model_path, 'cmudict-en-us.dict')
+)
+
+# Set for alignment
+ps.set_align_text(expected)
+
+# Process audio
+with AudioFile(audio_file) as af:
+    ps.start_utt()
+    for block in af:
+        ps.process_raw(block, False, False)
+    ps.end_utt()
+
+# First pass hypothesis
+hyp = ps.hyp()
+if hyp.hypstr.lower() != expected.lower():
+    print("Mismatch:", hyp.hypstr)
+else:
+    # Second pass for phoneme alignment
+    ps.set_alignment()
+    with AudioFile(audio_file) as af:
+        ps.start_utt()
+        for block in af:
+            ps.process_raw(block, False, False)
+        ps.end_utt()
+
+    # Get alignment and scores
+    alignment = ps.get_alignment()
+    if alignment:
+        total_score = 0
+        num_phones = 0
+        for word in alignment:
+            for phone in word:
+                duration = phone.end - phone.start + 1
+                # Assume ascore available; normalize log-likelihood
+                gop = -phone.ascore / duration if hasattr(phone, 'ascore') else 0  # GOP score
+                total_score += gop
+                num_phones += 1
+                print(f"Phone {phone.name}: GOP {gop:.2f}")
+        avg_gop = total_score / num_phones if num_phones else 0
+        print(f"Average GOP: {avg_gop:.2f} (higher better)")
+    else:
+        print("Alignment failed")
+
+22
