@@ -1,0 +1,95 @@
+#include <pocketsphinx.h>
+#include <sphinxbase/err.h>
+#include <stdio.h>
+#include <stdlib.h>
+
+int main(int argc, char *argv[])
+{
+    if (argc < 3) {
+        fprintf(stderr, "Usage: %s <wavfile> <expected-text>\n", argv[0]);
+        return 1;
+    }
+    const char *wavfile = argv[1];
+    const char *expected = argv[2];
+
+    // 1. Create config
+    ps_config_t *config = ps_config_init(NULL);
+    ps_default_search_args(config);
+    ps_config_set_str(config, "hmm", MODELDIR "/en-us/en-us");
+    ps_config_set_str(config, "dict", MODELDIR "/en-us/cmudict-en-us.dict");
+
+    // 2. Init decoder
+    ps_decoder_t *ps = ps_init(config);
+    if (ps == NULL) {
+        E_FATAL("Failed to create PocketSphinx decoder\n");
+        return 1;
+    }
+
+    // 3. Read audio file
+    FILE *fh;
+    int16 buf[512];
+    size_t nsamp;
+
+    if ((fh = fopen(wavfile, "rb")) == NULL) {
+        perror("fopen");
+        return 1;
+    }
+    // Skip WAV header (44 bytes typical)
+    fseek(fh, 44, SEEK_SET);
+
+    // 4. Start utterance
+    if (ps_start_utt(ps) < 0) {
+        E_FATAL("Failed to start utterance\n");
+    }
+
+    // Process raw audio
+    while (!feof(fh)) {
+        nsamp = fread(buf, sizeof(int16), 512, fh);
+        if (nsamp > 0) {
+            ps_process_raw(ps, buf, nsamp, FALSE, FALSE);
+        }
+    }
+    ps_end_utt(ps);
+    fclose(fh);
+
+    // 5. First-pass hypothesis
+    const char *hyp = ps_get_hyp(ps, NULL);
+    if (hyp == NULL) {
+        printf("No recognition result.\n");
+    } else {
+        printf("Hypothesis: %s\n", hyp);
+    }
+
+    // 6. Forced alignment
+    ps_alignment_t *al = ps_alignment_init(ps);
+    if (al == NULL) {
+        E_FATAL("Failed to init alignment\n");
+    }
+    if (ps_alignment_set_text(al, expected) < 0) {
+        E_FATAL("Failed to set expected text for alignment\n");
+    }
+
+    // Re-run alignment over same audio
+    ps_alignment_iter_t *itor;
+    for (itor = ps_alignment_words(al); itor; itor = ps_alignment_iter_next(itor)) {
+        ps_alignment_entry_t *ent = ps_alignment_iter_get(itor);
+        printf("Word: %s start=%d end=%d\n",
+               ent->word, ent->start, ent->end);
+
+        // Drill down into phones
+        ps_alignment_iter_t *pitor = ps_alignment_iter_children(itor);
+        while (pitor) {
+            ps_alignment_entry_t *pent = ps_alignment_iter_get(pitor);
+            printf("  Phone: %s start=%d end=%d score=%d\n",
+                   pent->word, pent->start, pent->end, pent->ascr);
+            pitor = ps_alignment_iter_next(pitor);
+        }
+    }
+
+    // Cleanup
+    ps_alignment_free(al);
+    ps_free(ps);
+    ps_config_free(config);
+
+    return 0;
+}
